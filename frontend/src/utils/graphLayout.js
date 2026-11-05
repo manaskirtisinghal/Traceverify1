@@ -103,3 +103,54 @@ export function pathToSeed(nodeId, timeline) {
   }
   return ids;
 }
+
+// Events connected to the current selection: the chain back to the starting event plus everything
+// that was reached through the selected event. For a selected link, both of its ends are included.
+export function connectedPath(selection, timeline, relationships) {
+  if (!selection) return null;
+  const byId = new Map(timeline.map((t) => [t.id, t]));
+  const children = new Map();
+  for (const t of timeline) {
+    if (t.status !== 'accepted' || t.parent_event_id == null) continue;
+    if (!children.has(t.parent_event_id)) children.set(t.parent_event_id, []);
+    children.get(t.parent_event_id).push(t.id);
+  }
+  const ids = new Set();
+  const addUp = (id) => {
+    for (const x of pathToSeed(id, timeline)) ids.add(x);
+    const t = byId.get(id);
+    if (t?.status === 'rejected' && t.parent_event_id != null) addUp(t.parent_event_id);
+  };
+  const addDown = (id) => {
+    const stack = [id];
+    while (stack.length) {
+      const cur = stack.pop();
+      ids.add(cur);
+      for (const c of children.get(cur) ?? []) if (!ids.has(c)) stack.push(c);
+    }
+  };
+  if (selection.kind === 'relationship') {
+    const r = relationships.find((x) => x.id === selection.id);
+    if (!r) return null;
+    addUp(r.source_event_id);
+    addUp(r.target_event_id);
+    addDown(r.target_event_id);
+  } else {
+    if (!byId.has(selection.id)) return null;
+    addUp(selection.id);
+    const sel = byId.get(selection.id);
+    if (sel.is_seed || sel.status === 'seed') for (const c of children.get(selection.id) ?? []) ids.add(c); // direct links only
+    else addDown(selection.id);
+  }
+  return ids;
+}
+
+// Point roughly halfway along an edge, for its strength label.
+export function edgeMidpoint(from, to) {
+  const fy = from.y + NODE_H / 2;
+  const ty = to.y + NODE_H / 2;
+  if (from.col === to.col) return { x: from.x - 26 - Math.min(40, Math.abs(ty - fy) / 6) * 0.75, y: (fy + ty) / 2 };
+  const x1 = to.col > from.col ? from.x + NODE_W : from.x;
+  const x2 = to.col > from.col ? to.x : to.x + NODE_W;
+  return { x: (x1 + x2) / 2, y: (fy + ty) / 2 };
+}

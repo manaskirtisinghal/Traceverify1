@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     cors_origins: str = ""
     cors_origin_regex: str = r"^http://(localhost|127\.0\.0\.1)(:\d+)?$"
 
-    # Default investigation parameters (all overridable per request)
+    # Default investigation parameters (overridable per request, except the threshold: it is a fixed,
+    # validated system setting applied to every investigation run)
     default_window_before: int = 300
     default_window_after: int = 1800
     default_threshold: float = 0.60

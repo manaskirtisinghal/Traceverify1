@@ -1,9 +1,10 @@
 """Live end-to-end audit of a running TRACEVERIFY API.
 
-Starts investigations for several seeds at several thresholds and windows over HTTP, then
-verifies that every returned event is a real ingested row (matching both PostgreSQL and the
-original source file line), that thresholds and windows behave monotonically, and that
-scores recompute from their components.
+Starts investigations for several seeds over HTTP (at the fixed system threshold) and re-runs
+them with a narrower window, then verifies that every returned event is a real ingested row
+(matching both PostgreSQL and the original source file line), that accepted links meet the
+threshold, that narrowing the window never adds events, that a per-request threshold is
+rejected, and that scores recompute from their components.
 
 Usage (backend running on :8000, from backend/):
     python -m scripts.audit_api [--base http://127.0.0.1:8000]
@@ -12,6 +13,7 @@ import argparse
 import gzip
 import json
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -20,7 +22,6 @@ from sqlalchemy import text
 from app.config import PROJECT_ROOT
 from app.database.session import engine
 
-THRESHOLDS = (0.8, 0.6, 0.45)
 FAILURES: list[str] = []
 
 
@@ -58,40 +59,41 @@ def main() -> int:
     chosen = [seeds[0], seeds[4], seeds[10]]
     for seed in chosen:
         print(f"\n== seed #{seed['id']} t={seed['ts']} {seed['user_name']} {seed['src_computer']}->{seed['dst_computer']}")
-        inv = call(base, "POST", "/api/investigations/start", {"seed_event_id": seed["id"], "threshold": THRESHOLDS[0]})
-        prev: set[int] = set()
-        for thr in THRESHOLDS:
-            inv = call(base, "POST", f"/api/investigations/{inv['id']}/rerun", {"threshold": thr})
-            tl = call(base, "GET", f"/api/investigations/{inv['id']}/events")
-            rels = call(base, "GET", f"/api/investigations/{inv['id']}/relationships")
-            w = inv["params"]["weights"]
-            ids = {t["id"] for t in tl if not t["is_seed"]}
-            m = inv["metrics"]
-            rules = sorted({r["matched_rule_code"] or "-" for r in rels})
-            print(f"   thr={thr:.2f} events={len(ids):>2} rels={len(rels):>2} candidates={m['candidates_evaluated']:>2}/"
-                  f"{m['events_in_window']} depth={m['max_path_depth']} latency={m['latency_ms']}ms rules={','.join(rules)}")
-            check(prev <= ids, f"lowering threshold to {thr} removed events {prev - ids}")
-            prev = ids
-            for r in rels:
-                recomputed = w["entity"] * r["entity_score"] + w["temporal"] * r["temporal_score"] + w["rule"] * r["rule_score"]
-                check(abs(recomputed - r["final_score"]) < 2e-3, f"rel {r['id']} final {r['final_score']} != {recomputed:.4f}")
-                check(r["final_score"] >= thr, f"rel {r['id']} below threshold")
-            t_min, t_max = seed["ts"] - inv["params"]["window_before"], seed["ts"] + inv["params"]["window_after"]
-            with engine.connect() as conn:
-                for t in tl:
-                    row = conn.execute(text("SELECT raw_line, source_file, line_no, ts FROM events WHERE id=:i"),
-                                       {"i": t["id"]}).one()
-                    check(row.raw_line == t["raw_line"], f"event {t['id']} raw line differs from DB")
-                    check(files[row.source_file][row.line_no - 1] == row.raw_line,
-                          f"event {t['id']} not found at {row.source_file}:{row.line_no}")
-                    check(t["is_seed"] or t_min <= t["ts"] <= t_max, f"event {t['id']} outside window")
+        inv = call(base, "POST", "/api/investigations/start", {"seed_event_id": seed["id"]})
+        thr = inv["params"]["threshold"]
+        try:
+            call(base, "POST", f"/api/investigations/{inv['id']}/rerun", {"threshold": 0.45})
+            check(False, "per-request threshold was accepted (it is a fixed system setting)")
+        except urllib.error.HTTPError as e:
+            check(e.code == 422, f"per-request threshold returned HTTP {e.code}, expected 422")
+        tl = call(base, "GET", f"/api/investigations/{inv['id']}/events")
+        rels = call(base, "GET", f"/api/investigations/{inv['id']}/relationships")
+        w = inv["params"]["weights"]
+        ids = {t["id"] for t in tl if not t["is_seed"]}
+        m = inv["metrics"]
+        rules = sorted({r["matched_rule_code"] or "-" for r in rels})
+        print(f"   default window thr={thr:.2f} events={len(ids):>2} rels={len(rels):>2} candidates={m['candidates_evaluated']:>2}/"
+              f"{m['events_in_window']} depth={m['max_path_depth']} latency={m['latency_ms']}ms rules={','.join(rules)}")
+        for r in rels:
+            recomputed = w["entity"] * r["entity_score"] + w["temporal"] * r["temporal_score"] + w["rule"] * r["rule_score"]
+            check(abs(recomputed - r["final_score"]) < 2e-3, f"rel {r['id']} final {r['final_score']} != {recomputed:.4f}")
+            check(r["final_score"] >= thr, f"rel {r['id']} below threshold")
+        t_min, t_max = seed["ts"] - inv["params"]["window_before"], seed["ts"] + inv["params"]["window_after"]
+        with engine.connect() as conn:
+            for t in tl:
+                row = conn.execute(text("SELECT raw_line, source_file, line_no, ts FROM events WHERE id=:i"),
+                                   {"i": t["id"]}).one()
+                check(row.raw_line == t["raw_line"], f"event {t['id']} raw line differs from DB")
+                check(files[row.source_file][row.line_no - 1] == row.raw_line,
+                      f"event {t['id']} not found at {row.source_file}:{row.line_no}")
+                check(t["is_seed"] or t_min <= t["ts"] <= t_max, f"event {t['id']} outside window")
         # narrow the window
         inv = call(base, "POST", f"/api/investigations/{inv['id']}/rerun",
-                   {"threshold": 0.45, "window_before": 0, "window_after": 20})
+                   {"window_before": 0, "window_after": 20})
         tl = call(base, "GET", f"/api/investigations/{inv['id']}/events")
-        print(f"   window -0/+20s thr=0.45 events={len(tl) - 1}")
+        print(f"   window -0/+20s thr={thr:.2f} events={len(tl) - 1}")
         check(all(seed["ts"] <= t["ts"] <= seed["ts"] + 20 for t in tl), "narrow window leaked events")
-        check(len(tl) - 1 <= len(prev), "narrow window returned more events than wide window")
+        check(len(tl) - 1 <= len(ids), "narrow window returned more events than wide window")
         detail = call(base, "GET", f"/api/events/{tl[-1]['id']}")
         check(detail["id"] == tl[-1]["id"] and detail["entities"], "event detail endpoint")
 

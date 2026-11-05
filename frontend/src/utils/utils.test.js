@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { lanlClock, normalizeWeights, signedDelta, weightsSum } from './format.js';
-import { buildGraph, pathToSeed } from './graphLayout.js';
+import { buildGraph, connectedPath, pathToSeed } from './graphLayout.js';
 
 describe('format', () => {
   it('formats LANL relative time', () => {
@@ -43,6 +43,15 @@ describe('graph layout', () => {
   });
   it('walks primary parents back to the seed', () => {
     expect([...pathToSeed(3, timeline)].sort()).toEqual([1, 2, 3]);
+  });
+  it('highlights the connected path of a selected event or link', () => {
+    const sorted = (set) => [...set].sort();
+    expect(sorted(connectedPath({ kind: 'event', id: 2 }, timeline, rels))).toEqual([1, 2, 3]);
+    expect(sorted(connectedPath({ kind: 'event', id: 3 }, timeline, rels))).toEqual([1, 2, 3]);
+    expect(sorted(connectedPath({ kind: 'event', id: 1 }, timeline, rels))).toEqual([1, 2]);
+    expect(sorted(connectedPath({ kind: 'event', id: 4 }, timeline, rels))).toEqual([1, 4]);
+    expect(sorted(connectedPath({ kind: 'relationship', id: 11 }, timeline, rels))).toEqual([1, 2, 3]);
+    expect(connectedPath(null, timeline, rels)).toBeNull();
   });
 });
 

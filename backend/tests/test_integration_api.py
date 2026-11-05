@@ -4,6 +4,7 @@ import gzip
 from sqlalchemy import func, select, text
 
 from app.models import Event, EventEntity, Relationship
+from app.schemas.investigation import FIXED_THRESHOLD
 from app.services.ingestion.ingest_service import REDTEAM_LABEL, SYNTHETIC_LABEL, ingest_file
 from tests.conftest import DATA_DIR
 
@@ -86,7 +87,7 @@ def test_start_investigation_returns_db_evidence(client, db_session):
 
 def test_chain_is_reconstructed_for_first_seed(client):
     seed = _seeds(client)[0]
-    inv = _start(client, seed["id"], threshold=0.6)
+    inv = _start(client, seed["id"])
     timeline = {t["id"]: t for t in client.get(f"/api/investigations/{inv['id']}/events").json()}
     types = {t["event_type"] for t in timeline.values()}
     assert {"AUTH_LOGON", "PROC_START", "DNS_RESOLVE", "NET_FLOW"} <= types
@@ -94,21 +95,22 @@ def test_chain_is_reconstructed_for_first_seed(client):
     assert all(timeline[f["parent_event_id"]]["event_type"] == "DNS_RESOLVE" for f in flows)
 
 
-def test_three_thresholds_monotonic_on_real_records(client):
+def test_threshold_is_a_fixed_system_setting(client):
     seed = _seeds(client)[0]
-    inv = _start(client, seed["id"], threshold=0.8)
-    sets = {}
-    for thr in (0.8, 0.6, 0.45):
-        r = client.post(f"/api/investigations/{inv['id']}/rerun", json={"threshold": thr})
-        assert r.status_code == 200
-        sets[thr] = {t["id"] for t in client.get(f"/api/investigations/{inv['id']}/events").json()}
-    assert sets[0.8] <= sets[0.6] <= sets[0.45]
-    assert len(sets[0.45]) > len(sets[0.8])
+    inv = _start(client, seed["id"])
+    assert inv["params"]["threshold"] == FIXED_THRESHOLD
+    assert _start(client, seed["id"], threshold=FIXED_THRESHOLD)["params"]["threshold"] == FIXED_THRESHOLD
+    for thr in (0.45, 0.8):
+        assert client.post("/api/investigations/start",
+                           json={"seed_event_id": seed["id"], "threshold": thr}).status_code == 422
+        assert client.post(f"/api/investigations/{inv['id']}/rerun", json={"threshold": thr}).status_code == 422
+    r = client.post(f"/api/investigations/{inv['id']}/rerun", json={"window_after": 600})
+    assert r.status_code == 200 and r.json()["params"]["threshold"] == FIXED_THRESHOLD
 
 
 def test_rerun_window_narrowing(client):
     seed = _seeds(client)[0]
-    inv = _start(client, seed["id"], threshold=0.45, window_after=1800)
+    inv = _start(client, seed["id"], window_after=1800)
     wide = client.get(f"/api/investigations/{inv['id']}/events").json()
     r = client.post(f"/api/investigations/{inv['id']}/rerun", json={"window_before": 0, "window_after": 20})
     assert r.status_code == 200 and r.json()["run_count"] == 2
@@ -121,11 +123,11 @@ def test_rerun_window_narrowing(client):
 def test_rerun_replaces_relationships(client, db_session):
     seed = _seeds(client)[1]
     inv = _start(client, seed["id"])
-    client.post(f"/api/investigations/{inv['id']}/rerun", json={"threshold": 0.95})
+    client.post(f"/api/investigations/{inv['id']}/rerun", json={"window_before": 0, "window_after": 60})
     db_session.expire_all()
-    stored = db_session.scalars(select(Relationship).where(Relationship.investigation_id == inv["id"],
-                                                           Relationship.status == "accepted")).all()
-    assert all(float(r.final_score) >= 0.95 for r in stored)
+    stored = db_session.scalars(select(Relationship).where(Relationship.investigation_id == inv["id"])).all()
+    assert all(abs(r.time_delta_seconds) <= 60 for r in stored if r.hop == 1)
+    assert all(float(r.final_score) >= FIXED_THRESHOLD for r in stored if r.status == "accepted")
 
 
 def test_multiple_seeds_produce_distinct_results(client):

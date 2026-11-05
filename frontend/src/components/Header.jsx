@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import Glossary from './Glossary.jsx';
 
 export default function Header({ view, resultsHref, apiStatus, dataset }) {
   const [open, setOpen] = useState(false);
@@ -40,6 +41,7 @@ export default function Header({ view, resultsHref, apiStatus, dataset }) {
         )}
       </nav>
       <div className="topbar-right" ref={ref}>
+        <Glossary />
         {synthetic && (
           <>
             <button className="data-pill" aria-expanded={open} aria-controls="data-note" onClick={() => setOpen((o) => !o)}>

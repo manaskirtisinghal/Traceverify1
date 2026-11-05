@@ -13,7 +13,7 @@ from app.repositories.rule_repository import RuleRepository
 from app.rules.definitions import RULES_BY_CODE
 from app.rules.event_types import EVENT_TYPE_LABELS
 from app.schemas.investigation import (
-    EventOut, InvestigationOut, InvestigationParamsIn, PathOut, RelationshipOut, RerunInvestigationIn,
+    FIXED_THRESHOLD, EventOut, InvestigationOut, InvestigationParamsIn, PathOut, RelationshipOut, RerunInvestigationIn,
     TimelineEventOut, TopEvidenceOut,
 )
 from app.services.correlation_engine import InvestigationParams, correlate
@@ -75,6 +75,7 @@ class InvestigationService:
         inv = self.get(investigation_id)
         merged = dict(inv.params)
         merged.update({k: v for k, v in overrides.model_dump(exclude_none=True).items()})
+        merged["threshold"] = FIXED_THRESHOLD  # older runs may have stored another value; every run uses the fixed one
         inv.params = InvestigationParamsIn(**merged).model_dump()  # re-validate the merged parameters
         return self._run(inv)
 

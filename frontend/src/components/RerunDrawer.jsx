@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import SettingsForm, { paramsValid } from './SettingsForm.jsx';
 
 export default function RerunDrawer({ initial, busy, error, onRerun, onClose }) {
-  const [params, setParams] = useState(initial);
+  // The threshold is a fixed system setting, so it is never sent; the backend always applies its own value.
+  const [params, setParams] = useState(() => {
+    const { threshold: _fixed, ...adjustable } = initial;
+    return adjustable;
+  });
   const panelRef = useRef(null);
 
   useEffect(() => {

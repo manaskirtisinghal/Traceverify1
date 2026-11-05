@@ -31,6 +31,10 @@ const rows = (status) =>
 const tab = async (name) => page.locator(`[data-testid="tab-${name}"]`).click();
 const waitForResults = async () => {
   await page.waitForURL(/#\/investigations\/\d+/);
+  await page.waitForSelector('[data-testid="story-summary"]');
+};
+const technicalView = async () => {
+  await page.locator('[data-testid="view-technical"]').click();
   await page.waitForSelector('[data-testid="graph-node"]');
 };
 const noOverflow = async () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth <= 1);
@@ -109,7 +113,7 @@ try {
   await page.locator('[data-testid="weight-temporal"]').fill('0.3');
   await page.locator('[data-testid="weight-rule"]').fill('0.3');
   await page.locator('[data-testid="advanced"] summary').click();
-  await page.locator('[data-testid="threshold"]').fill('0.6');
+  check((await page.locator('[data-testid="threshold"]').count()) === 0, 'no user-adjustable threshold slider');
   await shot('01-setup-1366');
 
   // ================= results page =================
@@ -117,21 +121,35 @@ try {
   await waitForResults();
   check(await page.locator('a[data-testid="nav-results"]').count() === 1, 'Results nav is an active link once results exist');
   check(await page.getByRole('heading', { name: /Investigation #\d+/ }).isVisible(), 'results heading');
+
+  // default: simple story view
+  const storyTitle = await page.locator('#story-title').innerText();
+  check(/Possible story/.test(storyTitle) && /not confirmed/.test(storyTitle), 'simple view opens with "Possible story — not confirmed"');
+  const narrative = await page.locator('[data-testid="story-narrative"]').innerText();
+  check(/User 1/.test(narrative) && /Computer 1/.test(narrative), 'story uses readable names (User 1, Computer 1)');
+  check(!/U620|C17693|C1003|#\d/.test(narrative), 'story hides technical IDs');
+  check(/does not prove/.test(await page.locator('[data-testid="story-caveat"]').innerText()), 'story states correlation does not prove cause');
+  check((await page.locator('[data-testid="graph-node"]').count()) === 0, 'graph is kept in the technical view');
+  check((await page.locator('[data-testid="story-step"]').count()) > 1, 'step-by-step list shown in simple view');
+  await shot('02a-simple-story-1366', true);
+  await technicalView();
+  check(await page.locator('[data-testid="technical-view"]').isVisible(), 'technical view is clearly labelled');
+  check(/0\.60/.test(await page.locator('[data-testid="fixed-threshold"]').innerText()), 'fixed threshold shown in technical details');
   check(/Starting event\s+U620@DOM1\s+C17693 → C1003/.test(await page.locator('[data-testid="start-line"]').innerText()),
     'starting event shown under the title');
-  check(/Longest path from start/.test(await page.locator('[data-testid="metrics"]').innerText()), 'clarified path metric');
+  check(/Longest chain from start/.test(await page.locator('[data-testid="metrics"]').innerText()), 'clarified path metric');
 
   // default selection
   await page.waitForSelector('[data-testid="why-panel"]');
   check(/Process start/.test(await page.locator('[data-testid="details-title"]').innerText()), 'details panel pre-selects top evidence');
   const why = await page.locator('[data-testid="why-panel"]').innerText();
-  check(/Included as evidence/.test(why) && /Related to/.test(why) && /Connected by/.test(why) && /Rule: /.test(why) && /Why it was included/.test(why),
+  check(/Included as evidence/.test(why) && /Related to/.test(why) && /What they have in common/.test(why) && /Attack pattern: /.test(why) && /Why it was included/.test(why),
     'details answer: related to, connected by (entities + rule), why included');
   check(/^0\.9\d\d$/.test(await page.locator('[data-testid="final-score"]').innerText()), 'final score shown');
   check(/started powershell\.exe on C1003/.test(await page.locator('[data-testid="what-happened"]').innerText()),
     'plain-English "what happened"');
   check(/well above the threshold/.test(await page.locator('[data-testid="strength"]').innerText()), 'strength relative to threshold');
-  check(/It shares .*fits the rule/.test(await page.locator('[data-testid="short-reason"]').innerText()), 'short explanation shown');
+  check(/It shares .*fits the attack pattern/.test(await page.locator('[data-testid="short-reason"]').innerText()), 'short explanation shown');
   check(!(await page.locator('[data-testid="score-breakdown"]').isVisible()), 'score breakdown collapsed by default');
   check((await page.locator('.g-node.selected').count()) === 1, 'default selection highlighted in graph');
   await shot('02-results-1366');
@@ -144,7 +162,9 @@ try {
   const sb = await seedNode.boundingBox();
   check(Math.abs(pb.x - sb.x) < 2 && pb.y < sb.y, 'pre-start event is in the start column, above the seed');
   check(await page.getByText('Link (earlier → later)').isVisible(), 'legend explains arrow direction');
-  check(await page.getByText('Links show correlation, not cause.').isVisible(), 'legend states correlation ≠ cause');
+  check(await page.getByText('A link means “probably related”, not “caused by”.').isVisible(), 'legend states correlation ≠ cause');
+  check(/relationship strength.*not probabilities/.test(await page.locator('[data-testid="strength-legend"]').innerText()),
+    'legend labels scores as relationship strength, not probabilities');
 
   // graph within container
   const wrap = await page.locator('.graph-wrap').boundingBox();
@@ -163,7 +183,11 @@ try {
   await page.locator('[data-testid="graph-node"]', { hasText: 'DNS resolution' }).first().click();
   const dnsId = await page.locator('.g-node.selected').getAttribute('data-event-id');
   check(/Process → DNS lookup from same host/.test(await page.locator('[data-testid="why-panel"]').innerText()), 'DNS explained by R03');
+  await page.mouse.move(5, 5); // hovering previews another path; check the selection's own path
+  check((await page.locator('.g-node.on-path').count()) > 0 && (await page.locator('.g-node.faded').count()) > 0,
+    'selecting an event highlights its connected path');
   await tab('timeline');
+  check((await page.locator('[data-testid="timeline-item"][data-on-path="true"]').count()) > 0, 'connected path highlighted in timeline');
   const selRow = page.locator('[data-testid="timeline-item"].selected');
   check((await selRow.getAttribute('data-event-id')) === dnsId, 'graph selection carried to timeline');
   check((await page.locator('.scorebar .thr').count()) === 0, 'no unexplained threshold marker in score bars');
@@ -184,7 +208,7 @@ try {
   check((await rows('rejected')) > 0, 'excluded events shown');
   await page.locator('[data-testid="timeline-item"][data-status="rejected"]').first().click();
   const exWhy = await page.locator('[data-testid="why-panel"]').innerText();
-  check(/Excluded/.test(exWhy) && /Why it was excluded/.test(exWhy) && /held down mainly by a low/.test(exWhy) && /not accepted/.test(exWhy), 'excluded event explains why (weakest component named)');
+  check(/Left out/.test(exWhy) && /Why it was excluded/.test(exWhy) && /held down mainly by a low/.test(exWhy) && /not accepted/.test(exWhy), 'excluded event explains why (weakest component named)');
   await shot('03-timeline-1366');
   await page.locator('[data-testid="show-rejected"]').uncheck();
 
@@ -192,27 +216,39 @@ try {
   await tab('graph');
   await page.locator('[data-testid="graph-edge"]').first().dispatchEvent('click');
   await page.waitForSelector('[data-testid="relationship-caption"]');
-  await page.locator('.disclosure summary', { hasText: 'Score breakdown' }).click();
-  check(await page.locator('[data-testid="score-breakdown"]').isVisible(), 'score breakdown expands');
+  check(await page.locator('[data-testid="score-breakdown"]').isVisible(), 'selecting a link opens how its strength was formed');
+  check(await page.locator('[data-testid="edge-strength-label"]').isVisible(), 'selected link shows its relationship strength');
+  check(/not a probability/.test(await page.locator('[data-testid="not-probability"]').innerText()), 'details say strength is not a probability');
   await page.waitForSelector('[data-testid="rule-condition"]');
   check(/condition:/.test(await page.locator('[data-testid="rule-condition"]').innerText()), 'rule condition from rules API');
-  await page.locator('.disclosure summary', { hasText: 'Raw event record' }).click();
+  await page.locator('.disclosure summary', { hasText: 'Original log record' }).click();
   await page.waitForSelector('.raw');
   check(await page.locator('.raw').isVisible(), 'raw record expands');
   await page.locator('[data-testid="reset-view"]').click();
 
   // rerun
   await page.locator('[data-testid="open-rerun"]').click();
-  await page.locator('[data-testid="rerun-drawer"] [data-testid="threshold"]').fill('0.45');
+  check((await page.locator('[data-testid="rerun-drawer"] [data-testid="threshold"]').count()) === 0, 'no threshold slider in re-run drawer');
+  await page.locator('[data-testid="rerun-drawer"] [data-testid="window-preset"]').selectOption('w3');
   await page.locator('[data-testid="rerun"]').click();
   await page.waitForSelector('[data-testid="change-note"]');
-  check(/8 events added, 0 removed/.test(await page.locator('[data-testid="change-note"]').innerText()), 'threshold 0.45 adds 8, removes 0');
+  check(/\d+ events? added, \d+ removed/.test(await page.locator('[data-testid="change-note"]').innerText()), 'wider-window re-run reports changes');
+  check(/0\.60/.test(await page.locator('[data-testid="fixed-threshold"]').innerText()), 're-run keeps the fixed threshold');
   const wrap2 = await page.locator('.graph-wrap').boundingBox();
   const inside2 = await page.locator('[data-testid="graph-node"]').evaluateAll((els, w) =>
     els.every((e) => { const b = e.getBoundingClientRect(); return b.left >= w.x - 1 && b.right <= w.x + w.width + 1; }), wrap2);
-  check(inside2, 'larger graph (16 events) still fits inside the panel');
+  check(inside2, 'graph still fits inside the panel after re-run');
   check(await page.locator('[data-testid="why-panel"]').isVisible(), 'details still populated after rerun');
-  await shot('04-rerun-045');
+  await shot('04-rerun-wider');
+
+  // simple ↔ technical keeps the investigation and the selection
+  await page.locator('[data-testid="view-simple"]').click();
+  await page.locator('[data-testid="story-step"]').nth(2).click();
+  check(await page.locator('[data-testid="story-why"]').isVisible(), 'simple step explains its link in plain words');
+  check(!/#\d|U620|C1003/.test(await page.locator('[data-testid="story-why"]').innerText()), 'plain link reason hides IDs');
+  await page.locator('[data-testid="show-evidence"]').click();
+  await page.waitForSelector('[data-testid="graph-node"]');
+  check((await page.locator('.g-node.selected').count()) === 1, 'switching to the evidence keeps the selected step');
   await page.close();
 
   // ================= other seeds on a 1600×1000 screen =================
@@ -223,6 +259,7 @@ try {
     await page.locator('[data-testid="seed-row"] .seed-main').nth(idx).click();
     await page.locator('[data-testid="run-investigation"]').click();
     await waitForResults();
+    await technicalView();
     await page.waitForSelector('[data-testid="why-panel"]');
     const w = await page.locator('.graph-wrap').boundingBox();
     const inside = await page.locator('[data-testid="graph-node"]').evaluateAll((els, b) =>

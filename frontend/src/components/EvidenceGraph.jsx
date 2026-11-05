@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { NODE_H, NODE_W, buildGraph, edgePath, pathToSeed } from '../utils/graphLayout.js';
+import { NODE_H, NODE_W, buildGraph, edgeMidpoint, edgePath, pathToSeed } from '../utils/graphLayout.js';
 import { SOURCE_META, compactSummary, offsetFromStart, score, wrapText } from '../utils/format.js';
 
 const MIN_ZOOM = 0.45; // the whole graph always fits; users can zoom in for detail
@@ -16,14 +16,20 @@ function GraphLegend({ showRejected, showSupporting }) {
       <div className="legend">
         <span><span className="line" />Link (earlier → later)</span>
         {showSupporting && <span><span className="line dashed" />Supporting</span>}
-        {showRejected && <span><span className="line dashed" style={{ borderColor: 'var(--danger)' }} />Excluded</span>}
-        <span className="subtle">Links show correlation, not cause.</span>
+        {showRejected && <span><span className="line dashed" style={{ borderColor: 'var(--danger)' }} />Weak (left out)</span>}
+        <span className="subtle">A link means “probably related”, not “caused by”.</span>
+      </div>
+      <div className="legend" data-testid="strength-legend">
+        <span className="subtle">
+          Numbers are <b>relationship strength</b> (0–1): how well the clues fit together. They are not probabilities.
+          Click a node or a link to highlight its path and see why it was included.
+        </span>
       </div>
     </div>
   );
 }
 
-export default function EvidenceGraph({ timeline, relationships, showRejected, showSupporting, selection, centerOn, fitRequest, onSelectEvent, onSelectRelationship }) {
+export default function EvidenceGraph({ timeline, relationships, showRejected, showSupporting, selection, pathIds, centerOn, fitRequest, onSelectEvent, onSelectRelationship }) {
   const wrapRef = useRef(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const graph = useMemo(
@@ -101,10 +107,10 @@ export default function EvidenceGraph({ timeline, relationships, showRejected, s
   };
 
   const selectedRel = selection?.kind === 'relationship' ? selection.id : null;
-  const selectedRelObj = selectedRel != null ? relationships.find((r) => r.id === selectedRel) : null;
   const focus = useMemo(() => (hover != null ? pathToSeed(hover, timeline) : null), [hover, timeline]);
-  const selectedId = selection?.kind === 'event' ? selection.id : selectedRelObj?.target_event_id ?? null;
-  const selectedPath = useMemo(() => (selectedId != null ? pathToSeed(selectedId, timeline) : null), [selectedId, timeline]);
+  // The selected event's or link's connected path stays highlighted; hovering temporarily previews another path.
+  const selectedPath = focus ? null : pathIds;
+  const selectedEdge = selectedRel != null ? graph.edges.find((e) => e.id === selectedRel) : null;
   const hoverNode = hover != null ? graph.nodes.find((n) => n.id === hover) : null;
 
   return (
@@ -133,14 +139,14 @@ export default function EvidenceGraph({ timeline, relationships, showRejected, s
           {graph.edges.map((e) => {
             const d = edgePath(e.from, e.to);
             const onPath = focus && focus.has(e.s.id) && focus.has(e.t.id) && e.is_primary;
-            const onSelectedPath = !focus && selectedPath && selectedPath.has(e.s.id) && selectedPath.has(e.t.id) && e.is_primary;
             const isSel = selectedRel === e.id;
-            const dim = focus && !onPath && !isSel;
+            const onSelectedPath = selectedPath && selectedPath.has(e.s.id) && selectedPath.has(e.t.id) && (e.is_primary || isSel);
+            const dim = focus ? !onPath && !isSel : selectedPath ? !onSelectedPath : false;
             const stroke = isSel ? 'var(--amber)' : e.rejected ? 'var(--danger)' : e.is_primary ? 'var(--accent)' : '#6f7a8e';
             return (
               <g key={e.id}>
                 <path
-                  className={`g-edge ${dim ? 'dim' : ''}`}
+                  className={`g-edge ${dim ? (focus ? 'dim' : 'faded') : ''}`}
                   d={d}
                   stroke={stroke}
                   strokeWidth={isSel ? 3 : onSelectedPath ? 2.6 : 1.2 + 1.6 * (e.final_score ?? 0.3)}
@@ -150,7 +156,7 @@ export default function EvidenceGraph({ timeline, relationships, showRejected, s
                 />
                 {!e.rejected && (
                   <path className="g-edge-hit" d={d} onClick={() => onSelectRelationship(e.id)} data-testid="graph-edge">
-                    <title>{`${e.matched_rule_name ?? 'No rule matched'} · score ${score(e.final_score, 2)}`}</title>
+                    <title>{`Relationship strength ${score(e.final_score, 2)} (not a probability) · ${e.matched_rule_name ?? 'no rule matched'} · click to see why`}</title>
                   </path>
                 )}
               </g>
@@ -160,11 +166,13 @@ export default function EvidenceGraph({ timeline, relationships, showRejected, s
             const meta = SOURCE_META[n.source_type];
             const selected = selection?.kind === 'event' && selection.id === n.id;
             const dim = focus && !focus.has(n.id);
+            const faded = !focus && selectedPath && !selectedPath.has(n.id);
+            const onPath = !focus && selectedPath?.has(n.id);
             const [summary] = wrapText(compactSummary(n), SUMMARY_CHARS, 1);
             return (
               <g
                 key={n.id}
-                className={`g-node ${selected ? 'selected' : ''} ${dim ? 'dim' : ''} ${n.status === 'rejected' ? 'rejected' : ''}`}
+                className={`g-node ${selected ? 'selected' : ''} ${dim ? 'dim' : ''} ${faded ? 'faded' : ''} ${onPath && !selected ? 'on-path' : ''} ${n.status === 'rejected' ? 'rejected' : ''}`}
                 transform={`translate(${n.x},${n.y})`}
                 onClick={() => onSelectEvent(n.id)}
                 onMouseEnter={() => !dragging && setHover(n.id)}
@@ -189,6 +197,15 @@ export default function EvidenceGraph({ timeline, relationships, showRejected, s
               </g>
             );
           })}
+          {selectedEdge && (() => {
+            const m = edgeMidpoint(selectedEdge.from, selectedEdge.to);
+            return (
+              <g className="g-edge-label" transform={`translate(${m.x},${m.y})`} data-testid="edge-strength-label">
+                <rect x="-62" y="-11" width="124" height="22" rx="4" />
+                <text textAnchor="middle" y="4">strength {score(selectedEdge.final_score, 2)}</text>
+              </g>
+            );
+          })()}
         </g>
       </svg>
 
@@ -204,7 +221,7 @@ export default function EvidenceGraph({ timeline, relationships, showRejected, s
           <strong>{hoverNode.is_seed ? 'Starting event' : hoverNode.event_label}</strong>
           <span className="mono">{hoverNode.summary}</span>
           <span className="subtle">
-            {hoverNode.is_seed ? 'Red-team record' : `${offsetFromStart(hoverNode.seconds_from_seed)} · score ${score(hoverNode.score, 3)}`}
+            {hoverNode.is_seed ? 'Red-team record' : `${offsetFromStart(hoverNode.seconds_from_seed)} · relationship strength ${score(hoverNode.score, 3)}`}
           </span>
         </div>
       )}

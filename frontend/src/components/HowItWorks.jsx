@@ -30,10 +30,10 @@ const ICONS = {
 };
 
 const STEPS = [
-  ['select', 'Select an event', 'Choose a starting security event.'],
-  ['run', 'Run analysis', 'Find related activity across security logs.'],
-  ['explore', 'Explore connections', 'View the evidence graph and timeline.'],
-  ['verify', 'Verify evidence', 'Inspect correlation scores and explanations.'],
+  ['select', 'Pick a suspicious event', 'Choose a sign-in that security testers flagged as an attack.'],
+  ['run', 'Search around it', 'We look at sign-ins, programs, lookups and network traffic close in time.'],
+  ['explore', 'Read the story', 'See what happened step by step, as a summary, map or timeline.'],
+  ['verify', 'Check the reasons', 'Click any step to see why it was connected and how strongly.'],
 ];
 
 export default function HowItWorks({ onDismiss }) {

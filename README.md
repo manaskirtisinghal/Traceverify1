@@ -36,10 +36,10 @@ approach that combines similarity-based and step-based correlation.
                                  ▲
                                  │  JSON over HTTP (Vite dev proxy /api → :8000)
  ┌──────────────── frontend (React 18 · Vite) ─────────────────┐
- │ New investigation: starting event, window, threshold,       │
+ │ New investigation: starting event, search window,           │
  │   Advanced settings (weights, sources, bounds) → Run        │
- │ Results: summary · evidence graph · timeline · details ·    │
- │   Adjust and re-run drawer                                  │
+ │ Results: Simple story (default) | Technical view: graph ·   │
+ │   timeline · details · Adjust and re-run drawer             │
  └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,7 +144,8 @@ LANL rows are still kept. (The hash is used only as a duplicate key, not for sec
    *correlatable* entity (user or computer) with the current frontier. Red-team rows and
    deselected sources are excluded.
 3. **Pair scoring.** Score every (frontier event, candidate) pair that actually shares an entity.
-4. **Threshold.** Each candidate keeps its best pair. It is **accepted** if `FinalScore ≥ threshold`;
+4. **Threshold.** Each candidate keeps its best pair. It is **accepted** if `FinalScore ≥ threshold`
+   (a fixed, validated system setting: `DEFAULT_THRESHOLD`, 0.60, applied to every run and re-run);
    otherwise its best edge is stored as **rejected**, so the analyst can see why it was excluded.
 5. **Bounded expansion.** Accepted events become the next frontier. This repeats for up to
    `max_hops` expansion rounds, capped at `max_nodes` events.
@@ -248,15 +249,17 @@ kept strictly as context: it never changes a score.
 {
   "seed_event_id": 1,
   "window_before": 300, "window_after": 1800,
-  "threshold": 0.6,
   "weights": {"entity": 0.4, "temporal": 0.3, "rule": 0.3},
   "temporal_decay": 300, "max_hops": 3, "max_nodes": 60,
   "source_types": ["auth", "proc", "dns", "flow"]
 }
 ```
 
-Validation returns **422** for weights that are negative or do not sum to 1, thresholds outside
-[0, 1], unknown source types or out-of-range windows. Unknown IDs return **404**. If the database
+The threshold is not a request parameter: every run uses the fixed system value (0.60), and a
+request that sends a different `threshold` is rejected with **422**.
+
+Validation returns **422** for weights that are negative or do not sum to 1, a non-default threshold,
+unknown source types or out-of-range windows. Unknown IDs return **404**. If the database
 is unreachable the API returns **503**.
 
 ---
@@ -389,9 +392,12 @@ The UI has two screens: **New investigation** (setup) and the **Results** worksp
 
 1. **New investigation.** Select the first starting event, **U620@DOM1 · C17693 → C1003 ·
    Day 2, 17:54:45**. The chevron on each row reveals the event ID, raw LANL time and source line.
-2. Keep the time window *5 min before · 30 min after* and threshold **0.60**. Scoring weights,
+2. Keep the time window *5 min before · 30 min after* (the threshold is fixed at **0.60**). Scoring weights,
    evidence sources and engine bounds are under **Advanced settings**. Click **Run investigation**.
-3. The **Results** page opens. The summary shows **8 related events**, 15 evidence links and
+3. The **Results** page opens in the **Simple story** view: a short *Possible story — not confirmed*
+   in plain words ("User 1", "Computer 1"), a reminder that correlation does not prove cause or
+   intent, and every linked step with a plain reason. Click **Technical view** (or *Show the
+   technical evidence for this step*) for the full evidence; the selection is kept. There the summary shows **8 related events**, 15 evidence links and
    14 of 38 events checked in the window.
    * **Evidence graph**: start → cmd.exe → DNS resolution → network flow (rules R02 → R03 → R04,
      longest chain 3 hops). Hover a node to trace its path to the start. Tick *Supporting links*
@@ -403,9 +409,8 @@ The UI has two screens: **New investigation** (setup) and the **Results** worksp
      entity frequencies are under *Raw record and context*.
 4. Tick **Show excluded events**. For example, the logon U748@DOM1 C17693 → C305 scores 0.568
    (R08 partial, 2 min later), and `powershell.exe` on C728 scores 0.217 (no rule).
-5. Click **Adjust and re-run**, set the threshold to **0.45** and re-run. The notice reports
-   **8 events added, 0 removed** (16 total). The next seed's chain joins through that weak
-   0.568 link.
+5. Select a link in the graph: its *relationship strength* (0–1, not a probability) is labelled,
+   the score breakdown opens, and its connected path is highlighted in the graph and timeline.
 6. Re-run with a custom window of **0 s before / 20 s after**. Only **4 events** remain.
 7. Go back with **← New investigation**, pick the event at **Day 3, 10:21:26**, deselect
    *Network flow* under Advanced settings and run at 0.80. No flows appear in the result.
@@ -418,7 +423,7 @@ The UI has two screens: **New investigation** (setup) and the **Results** worksp
 # backend: unit + PostgreSQL integration (uses TEST_DATABASE_URL, which is wiped)
 cd backend;  .\.venv\Scripts\python -m pytest
 
-# live audit against the running API (3 seeds × 3 thresholds + narrowed window,
+# live audit against the running API (3 seeds at the fixed threshold + narrowed window,
 # every returned event checked against PostgreSQL and the original source file line)
 .\.venv\Scripts\python -m scripts.audit_api
 
@@ -434,7 +439,7 @@ node e2e/smoke.mjs http://127.0.0.1:5173 ..\e2e-shots
 | `test_ingestion.py` | file-type detection, `?`/null handling, malformed rows, `.gz`, normalization, machine-account exclusion, row counts of the supplied files |
 | `test_scoring.py` | each score component, ordering, rule full/partial/none, failed logons, disabled rules, weighted sum, weight validation, "temporal proximity alone cannot pass" |
 | `test_engine.py` | chain reconstruction, distractor exclusion, step parentage, no cycles or duplicate edges, threshold monotonicity, window bounds, source filter, node budget, determinism |
-| `test_integration_api.py` | persistence, duplicate prevention, stored rows = source lines, indexes, every endpoint, 3 thresholds, window narrowing, reruns replace relationships, multiple seeds, 404/422 |
+| `test_integration_api.py` | persistence, duplicate prevention, stored rows = source lines, indexes, every endpoint, fixed threshold (non-default rejected), window narrowing, reruns replace relationships, multiple seeds, 404/422 |
 | `audit_api.py` | live HTTP audit with provenance checks |
 | `utils.test.js` | time/score formatting, weight normalization, graph layout |
 | `e2e/smoke.mjs` | 61 UI checks: "How it works" guide (show, dismiss, remembered, restore), 1366×768 setup fit, event search/scroll/tooltip, selection and raw details, Advanced settings, default evidence selection, chronological graph placement of pre-start events, graph fits its panel, untruncated node text, graph↔timeline sync across the view switch, sorting, excluded events, expandable score/raw details, re-run, three seeds, no console errors |
@@ -451,7 +456,7 @@ node e2e/smoke.mjs http://127.0.0.1:5173 ..\e2e-shots
 * **Hand-set parameters.** Weights, τ, rule scores and entity contributions are reasoned defaults.
   They are not learned or calibrated.
 * **Bounded expansion.** `max_hops` and `max_nodes` cap the graph. If the node budget truncates
-  results, lowering the threshold can swap which events fit; the run's metrics report this
+  results, changing the window can swap which events fit; the run's metrics report this
   (`truncated_by_node_budget`).
 * **Hub entities.** A heavily shared host such as `C17693` links many events. Rules and the
   temporal score limit the damage, but there is no IDF-style down-weighting.
@@ -475,6 +480,6 @@ Every item below was executed, not just implemented:
 
 * PostgreSQL 17.6 running; schema applied; 924 rows ingested; re-ingestion inserted 0 duplicates.
 * Backend pytest: all tests pass (unit + PostgreSQL integration, none skipped).
-* `audit_api.py` against the live server: PASS (seeds 01, 05, 11 × thresholds 0.80/0.60/0.45 + window narrowing).
+* `audit_api.py` against the live server: PASS (seeds 01, 05, 11 at the fixed 0.60 threshold + window narrowing).
 * Frontend: vitest pass; `vite build` succeeds; Playwright E2E in Edge: PASS (61 checks, no console errors).
 * Swagger UI at `/docs` returns 200.

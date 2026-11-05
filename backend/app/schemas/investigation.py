@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import settings
 from app.services.scoring import WEIGHT_TOLERANCE
@@ -14,6 +14,18 @@ SourceType = Literal["auth", "proc", "dns", "flow"]
 DISCLAIMER = ("Reconstructed paths are candidate evidence relationships produced by entity, temporal and "
               "rule-based correlation. They support analyst investigation and do not prove attacker intent "
               "or causality.")
+
+
+# The correlation threshold is a fixed, validated system setting (config: DEFAULT_THRESHOLD). It is no longer
+# adjustable per investigation; requests may omit it or repeat the fixed value, anything else is rejected.
+FIXED_THRESHOLD: float = settings.default_threshold
+
+
+def _fixed_threshold(v: float | None) -> float | None:
+    if v is not None and abs(v - FIXED_THRESHOLD) > 1e-9:
+        raise ValueError(f"threshold is a fixed system setting ({FIXED_THRESHOLD:.2f}) and cannot be changed "
+                         "per investigation")
+    return v
 
 
 class Weights(BaseModel):
@@ -34,7 +46,8 @@ class InvestigationParamsIn(BaseModel):
                                description="seconds before the seed included in the investigation window")
     window_after: int = Field(settings.default_window_after, ge=0, le=86_400,
                               description="seconds after the seed included in the investigation window")
-    threshold: float = Field(settings.default_threshold, ge=0, le=1, description="minimum FinalScore to accept")
+    threshold: float = Field(FIXED_THRESHOLD, ge=0, le=1,
+                             description="minimum FinalScore to accept; fixed system setting, not adjustable")
     weights: Weights = Field(default_factory=Weights)
     temporal_decay: float = Field(settings.default_temporal_decay, gt=0, le=86_400,
                                   description="τ in TemporalScore = exp(-|Δt|/τ)")
@@ -42,13 +55,18 @@ class InvestigationParamsIn(BaseModel):
     max_nodes: int = Field(settings.default_max_nodes, ge=1, le=500)
     source_types: list[SourceType] = Field(default_factory=lambda: ["auth", "proc", "dns", "flow"], min_length=1)
 
+    @field_validator("threshold")
+    @classmethod
+    def _threshold_is_fixed(cls, v: float | None) -> float | None:
+        return _fixed_threshold(v)
+
 
 class StartInvestigationIn(InvestigationParamsIn):
     seed_event_id: int = Field(..., ge=1)
 
 
 class RerunInvestigationIn(BaseModel):
-    """Any omitted field keeps the investigation's previous value."""
+    """Any omitted field keeps the investigation's previous value; the threshold is always the fixed one."""
     window_before: int | None = Field(None, ge=0, le=86_400)
     window_after: int | None = Field(None, ge=0, le=86_400)
     threshold: float | None = Field(None, ge=0, le=1)
@@ -57,6 +75,11 @@ class RerunInvestigationIn(BaseModel):
     max_hops: int | None = Field(None, ge=1, le=6)
     max_nodes: int | None = Field(None, ge=1, le=500)
     source_types: list[SourceType] | None = Field(None, min_length=1)
+
+    @field_validator("threshold")
+    @classmethod
+    def _threshold_is_fixed(cls, v: float | None) -> float | None:
+        return _fixed_threshold(v)
 
 
 class EventOut(BaseModel):

@@ -4,8 +4,19 @@ import Timeline from '../components/Timeline.jsx';
 import EvidenceGraph from '../components/EvidenceGraph.jsx';
 import EvidenceDetails from '../components/EvidenceDetails.jsx';
 import RerunDrawer from '../components/RerunDrawer.jsx';
+import StorySummary from '../components/StorySummary.jsx';
 import { ErrorState, InfoTip, Loading, SourceBadge } from '../components/common.jsx';
 import { readableTime, windowLabel } from '../utils/format.js';
+import { connectedPath } from '../utils/graphLayout.js';
+
+// Simple story (default, for non-specialists) or technical view (graph, timeline, scores, raw records).
+const VIEW_KEY = 'traceverify.resultsView';
+const readMode = () => {
+  try { return window.localStorage.getItem(VIEW_KEY) === 'technical' ? 'technical' : 'simple'; } catch { return 'simple'; }
+};
+const writeMode = (m) => {
+  try { window.localStorage.setItem(VIEW_KEY, m); } catch { /* storage unavailable: session-only */ }
+};
 
 const acceptedIds = (timeline) => new Set(timeline.filter((t) => t.status === 'accepted').map((t) => t.id));
 
@@ -22,6 +33,7 @@ export default function ResultsPage({ investigationId, initialEventId, onInvesti
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selection, setSelection] = useState(initialEventId ? { kind: 'event', id: initialEventId } : null);
+  const [mode, setModeState] = useState(readMode);
   const [centerOn, setCenterOn] = useState(null);
   const [view, setView] = useState('graph');
   const [fitRequest, setFitRequest] = useState(0);
@@ -81,6 +93,17 @@ export default function ResultsPage({ investigationId, initialEventId, onInvesti
     setSelection({ kind: 'event', id });
     setCenterOn({ id, at: Date.now() });
   };
+  // Switching views keeps the investigation, the selection and every filter as they are.
+  const setMode = (m) => {
+    setModeState(m);
+    writeMode(m);
+    if (m === 'technical' && selection?.kind === 'event') setCenterOn({ id: selection.id, at: Date.now() });
+  };
+  const showEvidence = (id) => {
+    setModeState('technical');
+    writeMode('technical');
+    selectEvent(id);
+  };
 
   const timelineItems = useMemo(() => {
     if (!data) return [];
@@ -98,6 +121,10 @@ export default function ResultsPage({ investigationId, initialEventId, onInvesti
     () => (data ? data.relationships.filter((r) => r.status === 'accepted' && (showSupporting || r.is_primary)) : []),
     [data, showSupporting],
   );
+  const pathIds = useMemo(
+    () => (data ? connectedPath(selection, data.timeline, data.relationships) : null),
+    [data, selection],
+  );
 
   if (loading) return <main className="container wide"><Loading label="Loading investigation…" /></main>;
   if (error) return <main className="container wide"><ErrorState error={error} onRetry={() => load().catch(setError)} /></main>;
@@ -112,6 +139,8 @@ export default function ResultsPage({ investigationId, initialEventId, onInvesti
       ? data.relationships.find((r) => r.id === selection.id)?.target_event_id
       : null;
 
+  const technical = mode === 'technical';
+
   return (
     <main className="container wide results">
       <div className="results-head">
@@ -121,126 +150,168 @@ export default function ResultsPage({ investigationId, initialEventId, onInvesti
               Investigation #{inv.id}
               {inv.run_count > 1 && <span className="run-tag">run {inv.run_count}</span>}
             </h1>
-            <div className="start-line" data-testid="start-line">
-              <SourceBadge source="redteam" />
-              <span className="start-label">Starting event</span>
-              <span className="mono start-user">{inv.seed.user_name}</span>
-              <span className="mono muted">{inv.seed.src_computer} → {inv.seed.dst_computer}</span>
-              <span className="subtle">{readableTime(inv.seed.ts)}</span>
-            </div>
-          </div>
-          <div className="actions">
-            <a className="btn" href="#/" data-testid="new-investigation">New investigation</a>
-            <button className="btn primary" onClick={() => { setRerunError(null); setDrawer(true); }} data-testid="open-rerun">
-              Adjust and re-run
-            </button>
-          </div>
-        </div>
-
-        <div className="stats" data-testid="metrics">
-          <div className="stat">
-            <span className="stat-value">{m.accepted_events}</span>
-            <span className="stat-label">Related events</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">{m.accepted_relationships}</span>
-            <span className="stat-label">Evidence links</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">{m.candidates_evaluated} <span className="of">of {m.events_in_window}</span></span>
-            <span className="stat-label">Events checked in window</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value">{m.max_path_depth} {m.max_path_depth === 1 ? 'link' : 'links'}</span>
-            <span className="stat-label">
-              Longest path from start
-              <InfoTip id="path-tip">The most links between the starting event and any related event.</InfoTip>
-            </span>
-          </div>
-          <span className="divider" />
-          <div className="stat">
-            <span className="stat-value mono">{p.threshold.toFixed(2)}</span>
-            <span className="stat-label">Threshold</span>
-          </div>
-          <div className="stat">
-            <span className="stat-value small">{windowLabel(p.window_before, p.window_after)}</span>
-            <span className="stat-label">Time window</span>
-          </div>
-          {change && (
-            <div className="change-note" data-testid="change-note" role="status">
-              Re-run: {change.added} event{change.added === 1 ? '' : 's'} added, {change.removed} removed
-              <button className="icon-btn" onClick={() => setChange(null)} aria-label="Dismiss">✕</button>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="results-grid">
-        <section className="card view-card">
-          <div className="card-head">
-            <div className="segmented tabs" role="tablist" aria-label="Evidence view">
-              <button role="tab" aria-selected={view === 'graph'} aria-pressed={view === 'graph'} onClick={() => setView('graph')} data-testid="tab-graph">
-                Graph
-              </button>
-              <button role="tab" aria-selected={view === 'timeline'} aria-pressed={view === 'timeline'} onClick={() => setView('timeline')} data-testid="tab-timeline">
-                Timeline
-              </button>
-            </div>
-            <div className="right">
-              {view === 'graph' ? (
-                <>
-                <button className="btn small" onClick={() => setFitRequest((n) => n + 1)} data-testid="reset-view">Reset view</button>
-                <label className="switch">
-                  <input type="checkbox" checked={showSupporting} onChange={(e) => setShowSupporting(e.target.checked)} data-testid="show-supporting" />
-                  Supporting links
-                </label>
-                </>
-              ) : (
-                <div className="segmented" role="group" aria-label="Sort timeline">
-                  <button aria-pressed={sortBy === 'time'} onClick={() => setSortBy('time')} data-testid="sort-time">By time</button>
-                  <button aria-pressed={sortBy === 'score'} onClick={() => setSortBy('score')} data-testid="sort-score">By score</button>
-                </div>
-              )}
-              <label className="switch">
-                <input type="checkbox" checked={showExcluded} onChange={(e) => setShowExcluded(e.target.checked)} data-testid="show-rejected" />
-                Excluded ({excludedCount})
-              </label>
-            </div>
-          </div>
-          <div className="view-body">
-            {view === 'graph' ? (
-              m.accepted_events === 0 && !showExcluded ? (
-                <div className="state" style={{ height: '100%' }}>
-                  No events reached the threshold.
-                  <button className="btn" onClick={() => setDrawer(true)}>Adjust settings</button>
-                </div>
-              ) : (
-                <EvidenceGraph
-                  timeline={graphItems}
-                  relationships={graphRels}
-                  showRejected={showExcluded}
-                  showSupporting={showSupporting}
-                  selection={selection}
-                  centerOn={centerOn}
-                  fitRequest={fitRequest}
-                  onSelectEvent={(id) => setSelection({ kind: 'event', id })}
-                  onSelectRelationship={(id) => setSelection({ kind: 'relationship', id })}
-                />
-              )
+            {technical ? (
+              <div className="start-line" data-testid="start-line">
+                <SourceBadge source="redteam" />
+                <span className="start-label">Starting event</span>
+                <span className="mono start-user">{inv.seed.user_name}</span>
+                <span className="mono muted">{inv.seed.src_computer} → {inv.seed.dst_computer}</span>
+                <span className="subtle">{readableTime(inv.seed.ts)}</span>
+              </div>
             ) : (
-              <Timeline items={timelineItems} selectedId={selectedEventId} onSelect={selectEvent} />
+              <div className="start-line" data-testid="start-line-simple">
+                <span className="start-label">Starting point</span>
+                <span className="muted">a sign-in flagged in a security-testing log</span>
+                <span className="subtle">{readableTime(inv.seed.ts)}</span>
+              </div>
             )}
           </div>
-        </section>
-
-        <aside className="card details-card">
-          <div className="card-head"><h2>Evidence details</h2></div>
-          <div className="card-body">
-            <EvidenceDetails selection={selection} timeline={data.timeline} relationships={data.relationships}
-              params={p} onSelectEvent={selectEvent} />
+          <div className="actions">
+            <div className="segmented view-switch" role="group" aria-label="Results view">
+              <button aria-pressed={!technical} onClick={() => setMode('simple')} data-testid="view-simple">Simple story</button>
+              <button aria-pressed={technical} onClick={() => setMode('technical')} data-testid="view-technical">Technical view</button>
+            </div>
+            <a className="btn" href="#/" data-testid="new-investigation">New investigation</a>
+            {technical && (
+              <button className="btn primary" onClick={() => { setRerunError(null); setDrawer(true); }} data-testid="open-rerun">
+                Adjust and re-run
+              </button>
+            )}
           </div>
-        </aside>
+        </div>
+
+        {change && (
+          <div className="change-note" data-testid="change-note" role="status">
+            Re-run: {change.added} event{change.added === 1 ? '' : 's'} added, {change.removed} removed
+            <button className="icon-btn" onClick={() => setChange(null)} aria-label="Dismiss">✕</button>
+          </div>
+        )}
       </div>
+
+      <StorySummary
+        timeline={data.timeline}
+        relationships={data.relationships}
+        threshold={p.threshold}
+        mode={mode}
+        selectedId={selectedEventId}
+        onSelect={selectEvent}
+        onShowEvidence={showEvidence}
+      />
+
+      {technical && (
+        <section className="technical" aria-labelledby="technical-title" data-testid="technical-view">
+          <div className="technical-head">
+            <h2 id="technical-title">Technical view</h2>
+            <span className="subtle small">
+              Full evidence for analysts: event IDs, relationship strengths, rules, filters and raw records.
+            </span>
+          </div>
+          <div className="stats" data-testid="metrics">
+            <div className="stat">
+              <span className="stat-value">{m.accepted_events}</span>
+              <span className="stat-label">Connected activities</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value">{m.accepted_relationships}</span>
+              <span className="stat-label">Links found</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value">{m.candidates_evaluated} <span className="of">of {m.events_in_window}</span></span>
+              <span className="stat-label">Activities checked nearby</span>
+            </div>
+            <div className="stat">
+              <span className="stat-value">{m.max_path_depth} {m.max_path_depth === 1 ? 'link' : 'links'}</span>
+              <span className="stat-label">
+                Longest chain from start
+                <InfoTip id="path-tip">The most steps between the starting event and any connected activity.</InfoTip>
+              </span>
+            </div>
+            <span className="divider" />
+            <div className="stat">
+              <span className="stat-value small">{windowLabel(p.window_before, p.window_after)}</span>
+              <span className="stat-label">Searched</span>
+            </div>
+            <div className="stat" data-testid="fixed-threshold">
+              <span className="stat-value mono small">{p.threshold.toFixed(2)}</span>
+              <span className="stat-label">
+                Inclusion threshold (fixed)
+                <InfoTip id="thr-tip">
+                  A link needs at least this relationship strength (0 to 1) to count as evidence. It is a fixed,
+                  validated system setting, the same for every investigation.
+                </InfoTip>
+              </span>
+            </div>
+          </div>
+
+          <div className="results-grid">
+            <section className="card view-card">
+              <div className="card-head">
+                <div className="segmented tabs" role="tablist" aria-label="Evidence view">
+                  <button role="tab" aria-selected={view === 'graph'} aria-pressed={view === 'graph'} onClick={() => setView('graph')} data-testid="tab-graph">
+                    Connection map
+                  </button>
+                  <button role="tab" aria-selected={view === 'timeline'} aria-pressed={view === 'timeline'} onClick={() => setView('timeline')} data-testid="tab-timeline">
+                    Timeline
+                  </button>
+                </div>
+                <div className="right">
+                  {view === 'graph' ? (
+                    <>
+                      <button className="btn small" onClick={() => setFitRequest((n) => n + 1)} data-testid="reset-view">Reset view</button>
+                      <label className="switch">
+                        <input type="checkbox" checked={showSupporting} onChange={(e) => setShowSupporting(e.target.checked)} data-testid="show-supporting" />
+                        Extra supporting links
+                      </label>
+                    </>
+                  ) : (
+                    <div className="segmented" role="group" aria-label="Sort timeline">
+                      <button aria-pressed={sortBy === 'time'} onClick={() => setSortBy('time')} data-testid="sort-time">By time</button>
+                      <button aria-pressed={sortBy === 'score'} onClick={() => setSortBy('score')} data-testid="sort-score">Strongest first</button>
+                    </div>
+                  )}
+                  <label className="switch">
+                    <input type="checkbox" checked={showExcluded} onChange={(e) => setShowExcluded(e.target.checked)} data-testid="show-rejected" />
+                    Show weak matches ({excludedCount})
+                  </label>
+                </div>
+              </div>
+              <div className="view-body">
+                {view === 'graph' ? (
+                  m.accepted_events === 0 && !showExcluded ? (
+                    <div className="state" style={{ height: '100%' }}>
+                      Nothing was linked strongly enough at the fixed inclusion threshold. Try a wider search.
+                      <button className="btn" onClick={() => setDrawer(true)}>Adjust settings</button>
+                    </div>
+                  ) : (
+                    <EvidenceGraph
+                      timeline={graphItems}
+                      relationships={graphRels}
+                      showRejected={showExcluded}
+                      showSupporting={showSupporting}
+                      selection={selection}
+                      pathIds={pathIds}
+                      centerOn={centerOn}
+                      fitRequest={fitRequest}
+                      onSelectEvent={(id) => setSelection({ kind: 'event', id })}
+                      onSelectRelationship={(id) => setSelection({ kind: 'relationship', id })}
+                    />
+                  )
+                ) : (
+                  <Timeline items={timelineItems} selectedId={selectedEventId} pathIds={pathIds} onSelect={selectEvent} threshold={p.threshold} />
+                )}
+              </div>
+            </section>
+
+            <aside className="card details-card">
+              <div className="card-head"><h2>Why is this connected?</h2></div>
+              <div className="card-body">
+                <EvidenceDetails selection={selection} timeline={data.timeline} relationships={data.relationships}
+                  params={p} onSelectEvent={selectEvent} />
+              </div>
+            </aside>
+          </div>
+        </section>
+      )}
 
       {drawer && (
         <RerunDrawer initial={p} busy={rerunning} error={rerunError} onRerun={rerun} onClose={() => setDrawer(false)} />

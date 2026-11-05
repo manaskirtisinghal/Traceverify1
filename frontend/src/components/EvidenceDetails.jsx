@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { api } from '../services/api.js';
 import { ErrorState, Loading, SourceBadge } from './common.jsx';
 import { offsetFromStart, readableTime, relativeTo, score } from '../utils/format.js';
+import { plainSentence, strengthWord } from '../utils/plainEnglish.js';
 
 const COMPONENTS = [
-  ['Shared entities', 'entity_score', 'entity', 'var(--accent)'],
-  ['Time proximity', 'temporal_score', 'temporal', 'var(--violet)'],
-  ['Rule match', 'rule_score', 'rule', 'var(--amber)'],
+  ['Same user / computer', 'entity_score', 'entity', 'var(--accent)'],
+  ['Close in time', 'temporal_score', 'temporal', 'var(--violet)'],
+  ['Attack pattern', 'rule_score', 'rule', 'var(--amber)'],
 ];
 
 // The rule registry is static for a session; fetch it once from the API.
@@ -72,17 +73,17 @@ function shortReason(rel, linked, threshold) {
   const d = rel.time_delta_seconds;
   text += d === 0 ? ', at the same second' : `, ${relativeTo(d)} ${d > 0 ? 'later' : 'earlier'}`;
   text += rel.matched_rule_code
-    ? `. The order of events fits the rule “${rel.matched_rule_name}”.`
-    : '. No transition rule fits this pair of events.';
+    ? `. The order of events fits the attack pattern “${rel.matched_rule_name}”.`
+    : '. These two events do not follow a known attack pattern.';
   if (rel.status !== 'accepted') {
     const [weakest] = Object.keys(COMPONENT_WORDS).sort((a, b) => rel[a] - rel[b]);
-    text += ` Its score of ${score(rel.final_score, 3)} stays below ${threshold.toFixed(2)}, held down mainly by a low`
+    text += ` Its relationship strength of ${score(rel.final_score, 3)} stays below ${threshold.toFixed(2)}, held down mainly by a low`
       + ` ${COMPONENT_WORDS[weakest]} score (${score(rel[weakest], 2)}).`;
   }
   return text;
 }
 
-function Relationship({ rel, params, eventsById, onSelectEvent }) {
+function Relationship({ rel, params, eventsById, onSelectEvent, openMaths }) {
   const [rules, setRules] = useState(null);
   useEffect(() => { loadRules().then(setRules); }, []);
   const accepted = rel.status === 'accepted';
@@ -96,7 +97,7 @@ function Relationship({ rel, params, eventsById, onSelectEvent }) {
     <section className="details" data-testid="why-panel">
       <div className={`verdict ${accepted ? 'ok' : 'no'}`}>
         <div className="verdict-line">
-          <span>{accepted ? 'Included as evidence' : 'Excluded'}{accepted && !rel.is_primary ? ' (supporting link)' : ''}</span>
+          <span>{accepted ? `Included as evidence: ${strengthWord(rel.final_score, params.threshold).text.toLowerCase()}` : 'Left out: weak link'}{accepted && !rel.is_primary ? ' (supporting link)' : ''}</span>
           <span className="verdict-score mono" data-testid="final-score">{score(rel.final_score, 3)}</span>
         </div>
         <div className="strength" aria-hidden="true">
@@ -104,8 +105,12 @@ function Relationship({ rel, params, eventsById, onSelectEvent }) {
           <span className="strength-thr" style={{ left: `${params.threshold * 100}%` }} />
         </div>
         <div className="verdict-sub" data-testid="strength">
-          Correlation score {strengthText(rel, params.threshold)} ({params.threshold.toFixed(2)})
+          Relationship strength {strengthText(rel, params.threshold)} ({params.threshold.toFixed(2)}, a fixed system setting)
         </div>
+        <p className="subtle small" data-testid="not-probability">
+          Relationship strength (0–1) measures how well the clues fit together. It is not a probability:
+          {' '}{score(rel.final_score, 2)} does not mean “{Math.round(rel.final_score * 100)}% likely”.
+        </p>
       </div>
 
       <div className="qa">
@@ -124,7 +129,7 @@ function Relationship({ rel, params, eventsById, onSelectEvent }) {
       </div>
 
       <div className="qa">
-        <h3>Connected by</h3>
+        <h3>What they have in common</h3>
         <div className="entity-list">
           {shared.length === 0 && !continuity && <span className="subtle">No shared entities</span>}
           {shared.map((s) => (
@@ -140,8 +145,8 @@ function Relationship({ rel, params, eventsById, onSelectEvent }) {
         </div>
         <p className="small" data-testid="matched-rule">
           {rel.matched_rule_code
-            ? <>Rule: {rel.matched_rule_name} <span className="subtle">({rel.matched_rule_code}, {rel.rule_match} match)</span></>
-            : <span className="subtle">No transition rule matched</span>}
+            ? <>Attack pattern: {rel.matched_rule_name} <span className="subtle">({rel.matched_rule_code}, {rel.rule_match} match)</span></>
+            : <span className="subtle">Does not match a known attack pattern</span>}
         </p>
       </div>
 
@@ -150,8 +155,8 @@ function Relationship({ rel, params, eventsById, onSelectEvent }) {
         <p className="reason" data-testid="short-reason">{shortReason(rel, linkedLabel, params.threshold)}</p>
       </div>
 
-      <details className="disclosure" data-testid="score-details">
-        <summary>Score breakdown and rule</summary>
+      <details className="disclosure" data-testid="score-details" open={openMaths}>
+        <summary>How this relationship strength was calculated</summary>
         <div className="disclosure-body">
           <div className="scores" data-testid="score-breakdown">
             {COMPONENTS.map(([label, key, wkey, color]) => (
@@ -164,13 +169,13 @@ function Relationship({ rel, params, eventsById, onSelectEvent }) {
                 </span>
               </div>
             ))}
-            <span className="final">Final</span>
+            <span className="final">Strength</span>
             <span className="final" />
             <span className="num final">{score(rel.final_score, 3)}</span>
-            <span className="contrib final" title="threshold">≥ {params.threshold.toFixed(2)}</span>
+            <span className="contrib final" title="inclusion threshold (fixed system setting)">{accepted ? '≥' : '<'} {params.threshold.toFixed(2)}</span>
           </div>
           <p className="subtle small">
-            Final = {params.weights.entity.toFixed(2)} × entities + {params.weights.temporal.toFixed(2)} × time + {params.weights.rule.toFixed(2)} × rule
+            Relationship strength = {params.weights.entity.toFixed(2)} × entities + {params.weights.temporal.toFixed(2)} × time + {params.weights.rule.toFixed(2)} × rule
           </p>
           {rule && (
             <p className="small" data-testid="rule-condition">
@@ -251,6 +256,7 @@ export default function EvidenceDetails({ selection, timeline, relationships, pa
           <div className="qa">
             <h3>What happened</h3>
             <p data-testid="what-happened">{whatHappened(item)}</p>
+            <p className="plain small" data-testid="plain-sentence">In plain words: {plainSentence(item)}</p>
             <p className="subtle small">
               {readableTime(item.ts)}{!item.is_seed && ` · ${offsetFromStart(item.seconds_from_seed)}`}
             </p>
@@ -269,7 +275,10 @@ export default function EvidenceDetails({ selection, timeline, relationships, pa
         </p>
       )}
 
-      {rel && <Relationship rel={rel} params={params} eventsById={eventsById} onSelectEvent={onSelectEvent} />}
+      {rel && (
+        <Relationship key={`${selection.kind}-${rel.id}`} rel={rel} params={params} eventsById={eventsById}
+          onSelectEvent={onSelectEvent} openMaths={selection.kind === 'relationship'} />
+      )}
       {supporting.length > 0 && (
         <p className="muted small">
           Also linked from{' '}
@@ -286,7 +295,7 @@ export default function EvidenceDetails({ selection, timeline, relationships, pa
       )}
 
       <details className="disclosure">
-        <summary>Raw event record</summary>
+        <summary>Original log record (for experts)</summary>
         <div className="disclosure-body">
           {error && <ErrorState error={error} />}
           {!detail && !error && <Loading label="Loading event…" />}
